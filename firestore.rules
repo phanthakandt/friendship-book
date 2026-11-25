@@ -5,8 +5,11 @@ service cloud.firestore {
       function signedIn() { return request.auth != null; }
       function bookPath() { return /databases/$(database)/documents/books/$(bookId); }
       function bookExists() { return exists(bookPath()); }
+      // ผู้ดูแลระบบ (เจ้าของโปรเจกต์) — มีสิทธิ์เจ้าของทุกเล่ม และเป็นคนเดียวที่ตั้งเจ้าของสมุดได้
+      function isAdmin() { return signedIn() && request.auth.uid == '24ZnvF3SdRZOYCNLARZWVf1DZsA2'; }
       function isOwner() {
-        return signedIn() && bookExists() && get(bookPath()).data.owner == request.auth.uid;
+        return isAdmin() ||
+          (signedIn() && bookExists() && get(bookPath()).data.owner == request.auth.uid);
       }
       // ข้อมูลที่เขียนเข้ามาต้องเป็นของคนที่ล็อกอินอยู่
       function stampedByMe() {
@@ -20,10 +23,11 @@ service cloud.firestore {
           && (!('created' in d) || d.created is number);
       }
 
-      // ข้อมูลสมุด: ใครก็อ่านได้ คนแรกที่ล็อกอินตั้งตัวเองเป็นเจ้าของได้ แล้วเปลี่ยนเจ้าของไม่ได้ ลบไม่ได้
+      // ข้อมูลสมุด: ใครก็อ่านได้ เฉพาะผู้ดูแลระบบสร้างสมุด/ตั้งเจ้าของได้ เจ้าของแก้ได้แต่เปลี่ยนเจ้าของไม่ได้ ลบไม่ได้
       allow read: if true;
-      allow create: if signedIn() && validBook() && request.resource.data.owner == request.auth.uid;
-      allow update: if isOwner() && validBook() && request.resource.data.owner == resource.data.owner;
+      allow create: if isAdmin() && validBook();
+      allow update: if isOwner() && validBook() &&
+        (isAdmin() || request.resource.data.owner == resource.data.owner);
       allow delete: if false;
 
       // หน้าในสมุด:
