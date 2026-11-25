@@ -72,7 +72,7 @@ input[type=range]{width:110px;accent-color:var(--acc)}
 #ink{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:800;touch-action:none}
 #page.drawing #ink{pointer-events:auto;cursor:crosshair}
 #page.drawing .el{pointer-events:none}
-.nav{display:flex;justify-content:center;align-items:center;gap:12px;padding:0 0 12px;color:var(--mut)}
+.nav{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:8px 12px;padding:0 8px 12px;color:var(--mut)}
 #status{position:fixed;right:14px;bottom:14px;background:var(--ink);color:#fff;padding:8px 14px;border-radius:999px;font-size:14px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none;max-width:80vw;z-index:50}
 #status.show{opacity:1;transform:none}
 #status.bad{background:#c0264f}
@@ -88,6 +88,13 @@ input[type=range]{width:110px;accent-color:var(--acc)}
  .tools>*,.ctx>*{flex:none}.tools .grow{display:none}
  .btn{padding:6px 9px}
 }
+body.view .side,body.view .tools,body.view .ctx{display:none}
+body.view .app{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr)}
+body.view .el{cursor:default}body.view .el .h{display:none}body.view .el.sel{outline:none}
+body.view .stage{padding:18px}
+.vonly{display:none}body.view .vonly{display:inline-flex}body.view .eonly{display:none}
+body.view.locked #exitView{display:none}
+body.view .nav{padding:4px 0 14px}
 @media(prefers-reduced-motion:reduce){#status{transition:none}}
 </style>
 </head>
@@ -115,6 +122,7 @@ input[type=range]{width:110px;accent-color:var(--acc)}
       <span class="sep"></span>
       <button class="btn" id="undo" title="Ctrl+Z">ย้อนกลับ</button>
       <span class="grow"></span>
+      <button class="btn" id="viewBtn">โหมดอ่าน</button>
       <button class="btn" id="share">คัดลอกลิงก์สมุด</button>
     </div>
     <div class="ctx" id="ctx"></div>
@@ -125,6 +133,8 @@ input[type=range]{width:110px;accent-color:var(--acc)}
       <button class="btn sm" id="prev">‹ ก่อนหน้า</button>
       <span id="pno">–</span>
       <button class="btn sm" id="next">ถัดไป ›</button>
+      <button class="btn sm vonly" id="viewLink">คัดลอกลิงก์โหมดอ่าน</button>
+      <button class="btn sm vonly pri" id="exitView">แก้ไขสมุด</button>
     </div>
   </main>
 </div>
@@ -156,6 +166,8 @@ const PAGE_BG=['#fff4c2','#d8f3e6','#d6ecff','#e9ddff','#ffe0c7','#ffd6e0'];
 const PATS=[['none','เรียบ'],['lines','เส้นบรรทัด'],['dots','จุด'],['grid','ตาราง']];
 const INK=['#2b2140','#ff4f8b','#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#ffffff'];
 
+const qs=new URLSearchParams(location.search);
+let viewMode=false;
 let store, pages={}, cur='cover', tool='select', sel=null, editingId=null, busy=false, scale=1, loaded=false;
 let penColor='#2b2140', penSize=6, renderedJson='', inkFor=null, inkTimer=null;
 const dirty={}, timers={}, hist={}, aCache={};
@@ -375,6 +387,7 @@ function delSel(){const p=pages[cur],it=find(sel);if(!it)return;mut(()=>{p.eleme
 function select(id){sel=id;pg.querySelectorAll('.el').forEach(n=>n.classList.toggle('sel',n.dataset.id===id));updCtx()}
 let lastTap={id:null,t:0};
 pg.addEventListener('pointerdown',e=>{
+  if(viewMode){swipeX=e.clientX;return}
   if(tool!=='select'||e.target===ink)return;
   const n=e.target.closest('.el');
   if(!n){finishEdit();select(null);return}
@@ -398,7 +411,7 @@ pg.addEventListener('pointerdown',e=>{
     if(moved){lastTap={id:null,t:0};pushHist(before);queueSave(cur);renderedJson=JSON.stringify(pages[cur])}};
   n.addEventListener('pointermove',mv);n.addEventListener('pointerup',up);n.addEventListener('pointercancel',up);
 });
-pg.addEventListener('dblclick',e=>{const n=e.target.closest('.el.t');if(n&&tool==='select'&&editingId!==n.dataset.id)startEdit(n.dataset.id)});
+pg.addEventListener('dblclick',e=>{if(viewMode)return;const n=e.target.closest('.el.t');if(n&&tool==='select'&&editingId!==n.dataset.id)startEdit(n.dataset.id)});
 
 /* ---------- พิมพ์ข้อความ ---------- */
 function startEdit(id,selectAll){
@@ -419,6 +432,7 @@ function finishEdit(){
   if(txt!==it.text)mut(()=>{it.text=txt},false);
 }
 document.addEventListener('paste',e=>{
+  if(viewMode)return;
   if(editingId){e.preventDefault();const t=(e.clipboardData||window.clipboardData).getData('text/plain');document.execCommand('insertText',false,t);return}
   if(e.target.closest&&e.target.closest('input,select'))return;
   const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith('image/'));
@@ -465,7 +479,7 @@ async function addImages(files,at){
 $('#addImg').onclick=()=>$('#file').click();
 $('#file').onchange=e=>{addImages(e.target.files);e.target.value=''};
 pg.addEventListener('dragover',e=>e.preventDefault());
-pg.addEventListener('drop',e=>{e.preventDefault();const r=pg.getBoundingClientRect();addImages(e.dataTransfer.files,{x:(e.clientX-r.left)/scale,y:(e.clientY-r.top)/scale})});
+pg.addEventListener('drop',e=>{e.preventDefault();if(viewMode)return;const r=pg.getBoundingClientRect();addImages(e.dataTransfer.files,{x:(e.clientX-r.left)/scale,y:(e.clientY-r.top)/scale})});
 
 /* ---------- ปากกา / ยางลบ ---------- */
 function setTool(t){
@@ -505,8 +519,22 @@ async function saveInk(pid){
 }
 
 /* ---------- เปลี่ยนหน้า เพิ่มหน้า ---------- */
-function goto(id){if(!pages[id])return;finishEdit();flushInk();sel=null;cur=id;renderSide();renderPage()}
-function step(d){const o=ordered(),i=o.findIndex(p=>p.id===cur);if(o[i+d])goto(o[i+d].id)}
+function goto(id,dir=0){if(!pages[id])return;finishEdit();flushInk();sel=null;cur=id;renderSide();renderPage();
+  if(viewMode&&dir&&pg.animate&&!matchMedia('(prefers-reduced-motion: reduce)').matches)
+    pg.animate([{opacity:0,transform:`scale(${scale}) translateX(${dir*40}px)`},{opacity:1,transform:`scale(${scale})`}],{duration:260,easing:'ease-out'})}
+let swipeX=null;
+pg.addEventListener('pointerup',e=>{if(!viewMode||swipeX==null)return;const dx=e.clientX-swipeX;swipeX=null;if(Math.abs(dx)>50)step(dx<0?1:-1)});
+function setView(on){
+  finishEdit();flushInk();setTool('select');select(null);viewMode=on;document.body.classList.toggle('view',on);
+  const u=new URL(location.href);if(on)u.searchParams.set('view','1');else u.searchParams.delete('view');u.searchParams.set('book',bookId);
+  try{history.replaceState(null,'',u)}catch(e){}
+  fit();
+}
+$('#viewBtn').onclick=()=>setView(true);
+$('#exitView').onclick=()=>setView(false);
+$('#viewLink').onclick=async()=>{const u=location.origin+location.pathname+'?book='+bookId+'&view=1';
+  try{await navigator.clipboard.writeText(u);status('คัดลอกลิงก์โหมดอ่านแล้ว')}catch(e){status(u)}};
+function step(d){const o=ordered(),i=o.findIndex(p=>p.id===cur);if(o[i+d])goto(o[i+d].id,d)}
 $('#prev').onclick=()=>step(-1);$('#next').onclick=()=>step(1);
 $('#addForm').onsubmit=e=>{
   e.preventDefault();if(!loaded)return;
@@ -520,6 +548,7 @@ $('#share').onclick=async()=>{const u=location.origin+location.pathname+'?book='
 document.addEventListener('keydown',e=>{
   if(editingId){if(e.key==='Escape')finishEdit();return}
   if(e.target.closest('input,select,textarea'))return;
+  if(viewMode){if(e.key==='ArrowLeft')step(-1);if(e.key==='ArrowRight'||e.key===' ')step(1);if(e.key==='Escape'&&!document.body.classList.contains('locked'))setView(false);return}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();undo();return}
   const it=sel&&find(sel);
   if(it&&(e.key==='Delete'||e.key==='Backspace')){e.preventDefault();delSel();return}
@@ -536,6 +565,7 @@ const fit=()=>{scale=Math.max(.2,Math.min((stage.clientWidth-28)/W,(stage.client
 const ro=new ResizeObserver(fit);ro.observe(stage);fit();
 
 /* ---------- เริ่ม ---------- */
+if(qs.get('view')){document.body.classList.add('locked');setView(true)}
 store=await makeStore();
 const md=$('#mode');
 if(store.mode==='firebase'){md.classList.add('on');md.innerHTML='<i></i>ออนไลน์ บันทึกขึ้น Firebase<br>สมุด: <b></b>'}
