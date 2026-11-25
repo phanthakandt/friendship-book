@@ -84,11 +84,18 @@ input[type=range]{width:110px;accent-color:var(--acc)}
  #list{flex-direction:row}
  #list button{white-space:nowrap;width:auto}
  .add{flex:none}.add input{width:120px;flex:none}
+ .acct{flex-direction:row;align-items:center;flex:none}.acct .who{max-width:110px}
  .tools,.ctx{padding:8px;gap:5px;flex-wrap:nowrap;overflow-x:auto}
  .tools>*,.ctx>*{flex:none}.tools .grow{display:none}
  .btn{padding:6px 9px}
 }
 body.view .side,body.view .tools,body.view .ctx{display:none}
+body.ro [data-tool],body.ro #addText,body.ro #addImg,body.ro #undo,body.ro .tools .sep{display:none}
+body.ro .el{cursor:default}body.ro .el .h{display:none}
+.acct{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--mut)}
+.acct .who{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acct .row{display:flex;gap:6px;flex-wrap:wrap}
+.note{font-size:14px;color:var(--ink)}
 body.view .app{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr)}
 body.view .el{cursor:default}body.view .el .h{display:none}body.view .el.sel{outline:none}
 body.view .stage{padding:18px}
@@ -103,12 +110,14 @@ body.view .nav{padding:4px 0 14px}
   <aside class="side">
     <div class="brand">สมุดเฟรนชิป</div>
     <div class="mode" id="mode"><i></i>กำลังเชื่อมต่อ…</div>
+    <div class="acct" id="acct"></div>
     <ul id="list"></ul>
+    <button class="btn pri" id="myPage" hidden>เขียนหน้าของฉัน</button>
     <form class="add" id="addForm">
       <input type="text" id="newName" placeholder="ชื่อเพื่อน" maxlength="40" aria-label="ชื่อเพื่อน">
       <button class="btn pri" type="submit">+ หน้า</button>
     </form>
-    <div class="hint">เพื่อน 1 คน = 1 หน้า<br>แตะสองครั้งที่ข้อความเพื่อแก้ ลากเพื่อย้าย จุดชมพูมุมขวาล่างใช้ย่อ/ขยาย</div>
+    <div class="hint">เพื่อน 1 คน = 1 หน้า ล็อกอินแล้วแก้ได้เฉพาะหน้าของตัวเอง<br>แตะสองครั้งที่ข้อความเพื่อแก้ ลากเพื่อย้าย จุดชมพูมุมขวาล่างใช้ย่อ/ขยาย</div>
   </aside>
   <main>
     <div class="tools" id="tools">
@@ -167,7 +176,7 @@ const PATS=[['none','เรียบ'],['lines','เส้นบรรทัด'
 const INK=['#2b2140','#ff4f8b','#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#ffffff'];
 
 const qs=new URLSearchParams(location.search);
-let viewMode=false;
+let viewMode=false, user=null, book, bookFromCache=true;
 let store, pages={}, cur='cover', tool='select', sel=null, editingId=null, busy=false, scale=1, loaded=false;
 let penColor='#2b2140', penSize=6, renderedJson='', inkFor=null, inkTimer=null;
 const dirty={}, timers={}, hist={}, aCache={};
@@ -184,19 +193,29 @@ async function makeStore(){
       const base='https://www.gstatic.com/firebasejs/10.12.2/';
       const {initializeApp}=await import(base+'firebase-app.js');
       const F=await import(base+'firebase-firestore.js');
+      const A=await import(base+'firebase-auth.js');
       const app=initializeApp(firebaseConfig);
+      const auth=A.getAuth(app);
       let db;
       try{db=F.initializeFirestore(app,{localCache:F.persistentLocalCache({tabManager:F.persistentMultipleTabManager()})})}
       catch(e){db=F.getFirestore(app)}
       const col=F.collection(db,'books',bookId,'pages');
-      const aDoc=id=>F.doc(db,'books',bookId,'assets',id);
+      const aDoc=id=>F.doc(db,'books',bookId,'assets',id),bDoc=F.doc(db,'books',bookId);
       return {
         mode:'firebase',
+        onAuth(cb){A.onAuthStateChanged(auth,cb)},
+        async login(){const pr=new A.GoogleAuthProvider();
+          try{await A.signInWithPopup(auth,pr)}catch(e){
+            if(e.code==='auth/popup-blocked'||e.code==='auth/operation-not-supported-in-this-environment')return A.signInWithRedirect(auth,pr);
+            if(e.code!=='auth/popup-closed-by-user'&&e.code!=='auth/cancelled-popup-request')throw e}},
+        logout:()=>A.signOut(auth),
+        listenBook(cb){F.onSnapshot(bDoc,s=>cb(s.exists()?s.data():null,s.metadata.fromCache),err=>status('อ่านข้อมูลสมุดไม่ได้: '+(err.code||err.message),true))},
+        claim:u=>F.setDoc(bDoc,{owner:u.uid,ownerName:u.displayName||'',created:Date.now()}),
         listen(cb){F.onSnapshot(col,{includeMetadataChanges:false},snap=>{const m={};snap.forEach(d=>{m[d.id]=d.data()});cb(m,snap.metadata.fromCache)},
           err=>status('เชื่อม Firebase ไม่สำเร็จ: '+(err.code||err.message)+' (ตรวจ Rules ของ Firestore)',true))},
         save:p=>F.setDoc(F.doc(col,p.id),p),
         remove:id=>F.deleteDoc(F.doc(col,id)),
-        putAsset:(id,data)=>F.setDoc(aDoc(id),{data,t:Date.now()}),
+        putAsset:(id,data)=>F.setDoc(aDoc(id),{data,uid:user?user.uid:'',t:Date.now()}),
         getAsset:async id=>{const s=await F.getDoc(aDoc(id));return s.exists()?s.data().data:null},
         delAsset:id=>F.deleteDoc(aDoc(id)).catch(()=>{})
       };
@@ -210,6 +229,7 @@ async function makeStore(){
   };
   return {
     mode:'local',
+    onAuth(cb){cb(null)},listenBook(cb){cb({owner:'local'},false)},
     listen(cb){cb(ls.get('pages')||{},false)},
     async save(p){const m=ls.get('pages')||{};m[p.id]=p;if(!ls.set('pages',m))throw new Error('ที่เก็บเต็ม')},
     async remove(id){const m=ls.get('pages')||{};delete m[id];ls.set('pages',m)},
@@ -241,13 +261,44 @@ function friendPage(id,name,order){
   return {id,order,name,bg:PAGE_BG[order%PAGE_BG.length],pattern:'lines',drawing:null,elements:els};
 }
 
+/* ---------- สิทธิ์ ---------- */
+function isOwner(){return store&&store.mode==='local'||!!(user&&book&&book.owner===user.uid)}
+function canEdit(p){return !!p&&(store.mode==='local'||!!user&&(isOwner()||p.uid===user.uid))}
+function locked(){return viewMode||!canEdit(pages[cur])}
+const myId=()=>user?'u_'+user.uid:null;
+function applyPerm(){
+  const ro=!canEdit(pages[cur]);document.body.classList.toggle('ro',ro);
+  if(ro&&tool!=='select'){tool='select';pg.classList.remove('drawing');document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool==='select'))}
+  if(ro)finishEdit();
+  $('#addForm').hidden=!isOwner();
+  const mp=$('#myPage');mp.hidden=!(store.mode==='firebase'&&user&&!isOwner());
+  mp.textContent=user&&pages[myId()]?'ไปหน้าของฉัน':'เขียนหน้าของฉัน';
+  renderAcct();
+}
+function renderAcct(){
+  const a=$('#acct');a.textContent='';if(store.mode!=='firebase')return;
+  const btn=(t,f,cls='btn sm')=>{const b=document.createElement('button');b.className=cls;b.textContent=t;b.onclick=f;return b};
+  if(!user){const n=document.createElement('div');n.textContent='ล็อกอินเพื่อเขียนหน้าของคุณ';a.append(n,btn('ล็อกอินด้วย Google',login,'btn pri sm'));return}
+  const w=document.createElement('div');w.className='who';w.textContent=(user.displayName||user.email||'ผู้ใช้')+(isOwner()?' · เจ้าของสมุด':'');
+  const r=document.createElement('div');r.className='row';
+  if(book===null&&!bookFromCache)r.append(btn('ตั้งฉันเป็นเจ้าของสมุดเล่มนี้',claim,'btn pri sm'));
+  r.append(btn('ออกจากระบบ',()=>store.logout()));a.append(w,r);
+}
+async function login(){try{await store.login()}catch(e){status('ล็อกอินไม่สำเร็จ: '+(e.code||e.message),true)}}
+async function claim(){try{await store.claim(user);status('คุณเป็นเจ้าของสมุดเล่มนี้แล้ว')}catch(e){status('ตั้งเจ้าของไม่ได้: '+(e.code||e.message),true)}}
+function ensureCover(){
+  if(!loaded||pages.cover||!isOwner())return;
+  pages.cover=defaultCover();if(user)pages.cover.uid=user.uid;queueSave('cover');renderSide();if(cur==='cover')renderPage();
+}
+function permChanged(){applyPerm();ensureCover();renderedJson='';if(!busy&&!editingId)renderPage()}
+
 /* ---------- รับข้อมูลจากที่เก็บ ---------- */
 function onRemote(m,fromCache){
   const now=Date.now(),fresh=id=>dirty[id]&&now-dirty[id]<3000;
   for(const id in m){if(!fresh(id))pages[id]=m[id]}
   for(const id in pages){if(!(id in m)&&!fresh(id)&&loaded)delete pages[id]}
-  if(!pages.cover){if(fromCache)return;pages.cover=defaultCover();queueSave('cover')}
-  loaded=true;
+  if(!fromCache)loaded=true;
+  ensureCover();
   if(!pages[cur]){cur='cover';sel=null}
   renderSide();
   if(!busy&&!editingId&&JSON.stringify(pages[cur])!==renderedJson)renderPage();
@@ -281,7 +332,8 @@ function buildEl(e,i){
 }
 function renderPage(){
   const p=pages[cur];pg.querySelectorAll('.el,.loading').forEach(n=>n.remove());
-  if(!p){renderedJson='';return}
+  applyPerm();
+  if(!p){renderedJson='';if(loaded){const d=document.createElement('div');d.className='loading';d.textContent=book===null?'สมุดเล่มนี้ยังไม่มีเจ้าของ':'ยังไม่มีหน้าปก';pg.insertBefore(d,ink)}return}
   renderedJson=JSON.stringify(p);
   pg.style.backgroundColor=p.bg;pg.dataset.pat=p.pattern||'none';pg.classList.toggle('dk',isDark(p.bg));
   if(sel&&!find(sel))sel=null;
@@ -301,6 +353,12 @@ const sw=(list,cur,attr)=>list.map(k=>`<button class="c${k===cur?' on':''}" data
 function updCtx(){
   const c=$('#ctx'),p=pages[cur];if(!p){c.textContent='';return}
   const it=sel&&find(sel);
+  if(!canEdit(p)){
+    const who=p.id==='cover'?'เจ้าของสมุด':(p.name||'เพื่อน');
+    c.innerHTML='<span class="note"></span>';
+    c.firstChild.textContent=!user?'หน้านี้ดูได้อย่างเดียว · ล็อกอินด้วย Google เพื่อเขียนหน้าของคุณเอง':'หน้านี้เป็นของ '+who+' · คุณแก้ได้เฉพาะหน้าของตัวเอง';
+    return;
+  }
   if(tool!=='select'){
     c.innerHTML=`<span class="lb">${tool==='pen'?'สีปากกา':'ยางลบ'}</span>${tool==='pen'?sw(INK,penColor,'pen')+`<input type="color" id="penC" value="${penColor}" aria-label="เลือกสีเอง">`:''}
       <span class="sep"></span><label for="penS">ขนาด</label><input type="range" id="penS" min="1" max="40" value="${penSize}">
@@ -328,19 +386,19 @@ function updCtx(){
       ${isCover?'':`<input type="text" id="pname" maxlength="40" aria-label="ชื่อเจ้าของหน้า" style="width:140px">`}
       <span class="lb">พื้นหลัง</span>${sw(BG,p.bg,'bg')}<input type="color" id="bgC" value="${p.bg}" aria-label="เลือกสีพื้นหลังเอง">
       <select id="pat" aria-label="ลายกระดาษ">${PATS.map(([v,n])=>`<option value="${v}"${v===p.pattern?' selected':''}>${n}</option>`).join('')}</select>
-      ${isCover?'':`<span class="sep"></span><button class="btn sm" data-a="pUp">เลื่อนหน้าขึ้น</button><button class="btn sm" data-a="pDown">เลื่อนหน้าลง</button><button class="btn sm warn" data-a="delPage">ลบหน้านี้</button>`}`;
+      ${isCover?'':`<span class="sep"></span>${isOwner()?'<button class="btn sm" data-a="pUp">เลื่อนหน้าขึ้น</button><button class="btn sm" data-a="pDown">เลื่อนหน้าลง</button>':''}<button class="btn sm warn" data-a="delPage">ลบหน้านี้</button>`}`;
     const pn=$('#pname');if(pn)pn.value=p.name||'';
   }
 }
 function pushHist(json){const h=hist[cur]=hist[cur]||[];h.push(json);if(h.length>50)h.shift()}
 function mut(fn,rerender=true){const b=JSON.stringify(pages[cur]);fn();pushHist(b);queueSave(cur);if(rerender)renderPage();else renderedJson=JSON.stringify(pages[cur])}
 function undo(){
-  finishEdit();const h=hist[cur];if(!h||!h.length)return status('ไม่มีอะไรให้ย้อนกลับแล้ว');
+  if(locked())return;finishEdit();const h=hist[cur];if(!h||!h.length)return status('ไม่มีอะไรให้ย้อนกลับแล้ว');
   const p=JSON.parse(h.pop());p.drawing=pages[cur].drawing;pages[cur]=p;queueSave(cur);renderPage();renderSide();
 }
 let delArm=0;
 $('#ctx').addEventListener('click',e=>{
-  const b=e.target.closest('button');if(!b)return;const p=pages[cur],it=sel&&find(sel);
+  const b=e.target.closest('button');if(!b||locked())return;const p=pages[cur],it=sel&&find(sel);
   if(b.dataset.pen){penColor=b.dataset.pen;updCtx();return}
   if(b.dataset.bg)return mut(()=>{p.bg=b.dataset.bg}),renderSide();
   if(b.dataset.tc&&it)return mut(()=>{it.color=b.dataset.tc});
@@ -373,7 +431,7 @@ $('#ctx').addEventListener('input',e=>{
   if(t.id==='penC')penColor=t.value;
 });
 $('#ctx').addEventListener('change',e=>{
-  const t=e.target,p=pages[cur],it=sel&&find(sel);
+  if(locked())return;const t=e.target,p=pages[cur],it=sel&&find(sel);
   if(t.id==='fnt'&&it)mut(()=>{it.font=t.value});
   if(t.id==='tcC'&&it)mut(()=>{it.color=t.value});
   if(t.id==='bgC')mut(()=>{p.bg=t.value}),renderSide();
@@ -387,7 +445,7 @@ function delSel(){const p=pages[cur],it=find(sel);if(!it)return;mut(()=>{p.eleme
 function select(id){sel=id;pg.querySelectorAll('.el').forEach(n=>n.classList.toggle('sel',n.dataset.id===id));updCtx()}
 let lastTap={id:null,t:0};
 pg.addEventListener('pointerdown',e=>{
-  if(viewMode){swipeX=e.clientX;return}
+  if(locked()){swipeX=e.clientX;return}
   if(tool!=='select'||e.target===ink)return;
   const n=e.target.closest('.el');
   if(!n){finishEdit();select(null);return}
@@ -411,7 +469,7 @@ pg.addEventListener('pointerdown',e=>{
     if(moved){lastTap={id:null,t:0};pushHist(before);queueSave(cur);renderedJson=JSON.stringify(pages[cur])}};
   n.addEventListener('pointermove',mv);n.addEventListener('pointerup',up);n.addEventListener('pointercancel',up);
 });
-pg.addEventListener('dblclick',e=>{if(viewMode)return;const n=e.target.closest('.el.t');if(n&&tool==='select'&&editingId!==n.dataset.id)startEdit(n.dataset.id)});
+pg.addEventListener('dblclick',e=>{if(locked())return;const n=e.target.closest('.el.t');if(n&&tool==='select'&&editingId!==n.dataset.id)startEdit(n.dataset.id)});
 
 /* ---------- พิมพ์ข้อความ ---------- */
 function startEdit(id,selectAll){
@@ -432,14 +490,14 @@ function finishEdit(){
   if(txt!==it.text)mut(()=>{it.text=txt},false);
 }
 document.addEventListener('paste',e=>{
-  if(viewMode)return;
+  if(locked())return;
   if(editingId){e.preventDefault();const t=(e.clipboardData||window.clipboardData).getData('text/plain');document.execCommand('insertText',false,t);return}
   if(e.target.closest&&e.target.closest('input,select'))return;
   const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith('image/'));
   if(files.length){e.preventDefault();addImages(files)}
 });
 $('#addText').onclick=()=>{
-  setTool('select');const p=pages[cur];if(!p)return;
+  if(locked())return;setTool('select');const p=pages[cur];if(!p)return;
   const it=T(150,340+(p.elements.length%5)*20,300,'พิมพ์ข้อความตรงนี้',28,{color:isDark(p.bg)?'#ffffff':'#2b2140',align:'center'});
   mut(()=>{p.elements.push(it)});sel=it.id;renderPage();startEdit(it.id,true);
 };
@@ -461,7 +519,7 @@ async function compress(file){
   return {url,w:iw,h:ih};
 }
 async function addImages(files,at){
-  setTool('select');const pid=cur;
+  if(locked())return;setTool('select');const pid=cur;
   for(const [k,f] of [...files].entries()){
     if(!f.type.startsWith('image/'))continue;
     status('กำลังอัปโหลดรูป…');
@@ -479,11 +537,11 @@ async function addImages(files,at){
 $('#addImg').onclick=()=>$('#file').click();
 $('#file').onchange=e=>{addImages(e.target.files);e.target.value=''};
 pg.addEventListener('dragover',e=>e.preventDefault());
-pg.addEventListener('drop',e=>{e.preventDefault();if(viewMode)return;const r=pg.getBoundingClientRect();addImages(e.dataTransfer.files,{x:(e.clientX-r.left)/scale,y:(e.clientY-r.top)/scale})});
+pg.addEventListener('drop',e=>{e.preventDefault();if(locked())return;const r=pg.getBoundingClientRect();addImages(e.dataTransfer.files,{x:(e.clientX-r.left)/scale,y:(e.clientY-r.top)/scale})});
 
 /* ---------- ปากกา / ยางลบ ---------- */
 function setTool(t){
-  if(t===tool)return;finishEdit();flushInk();tool=t;
+  if(t===tool)return;if(t!=='select'&&locked())return;finishEdit();flushInk();tool=t;
   if(t!=='select')select(null);
   pg.classList.toggle('drawing',t!=='select');
   document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t));
@@ -493,7 +551,7 @@ document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>setTool(b.data
 const pt=e=>{const r=ink.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width*CW,y:(e.clientY-r.top)/r.height*CH}};
 let last=null,mid=null;
 ink.addEventListener('pointerdown',e=>{
-  if(tool==='select')return;e.preventDefault();busy=true;ink.setPointerCapture(e.pointerId);touch(cur);
+  if(tool==='select'||locked())return;e.preventDefault();busy=true;ink.setPointerCapture(e.pointerId);touch(cur);
   last=mid=pt(e);
   ictx.globalCompositeOperation=tool==='eraser'?'destination-out':'source-over';
   ictx.strokeStyle=ictx.fillStyle=penColor;ictx.lineWidth=(tool==='eraser'?penSize*3:penSize)*1.5;ictx.lineCap=ictx.lineJoin='round';
@@ -523,7 +581,7 @@ function goto(id,dir=0){if(!pages[id])return;finishEdit();flushInk();sel=null;cu
   if(viewMode&&dir&&pg.animate&&!matchMedia('(prefers-reduced-motion: reduce)').matches)
     pg.animate([{opacity:0,transform:`scale(${scale}) translateX(${dir*40}px)`},{opacity:1,transform:`scale(${scale})`}],{duration:260,easing:'ease-out'})}
 let swipeX=null;
-pg.addEventListener('pointerup',e=>{if(!viewMode||swipeX==null)return;const dx=e.clientX-swipeX;swipeX=null;if(Math.abs(dx)>50)step(dx<0?1:-1)});
+pg.addEventListener('pointerup',e=>{if(!locked()||swipeX==null)return;const dx=e.clientX-swipeX;swipeX=null;if(Math.abs(dx)>50)step(dx<0?1:-1)});
 function setView(on){
   finishEdit();flushInk();setTool('select');select(null);viewMode=on;document.body.classList.toggle('view',on);
   const u=new URL(location.href);if(on)u.searchParams.set('view','1');else u.searchParams.delete('view');u.searchParams.set('book',bookId);
@@ -537,18 +595,23 @@ $('#viewLink').onclick=async()=>{const u=location.origin+location.pathname+'?boo
 function step(d){const o=ordered(),i=o.findIndex(p=>p.id===cur);if(o[i+d])goto(o[i+d].id,d)}
 $('#prev').onclick=()=>step(-1);$('#next').onclick=()=>step(1);
 $('#addForm').onsubmit=e=>{
-  e.preventDefault();if(!loaded)return;
+  e.preventDefault();if(!loaded||!isOwner())return;
   const name=$('#newName').value.trim()||'เพื่อน',order=Math.max(0,...Object.values(pages).map(p=>p.order||0))+1,id='p_'+uid();
-  pages[id]=friendPage(id,name,order);queueSave(id);$('#newName').value='';goto(id);status('เพิ่มหน้าของ '+name+' แล้ว');
+  pages[id]=friendPage(id,name,order);if(user)pages[id].uid=user.uid;queueSave(id);$('#newName').value='';goto(id);status('เพิ่มหน้าของ '+name+' แล้ว');
 };
 $('#undo').onclick=undo;
+$('#myPage').onclick=()=>{
+  if(!user)return login();const id=myId();if(pages[id])return goto(id);
+  const name=(user.displayName||'เพื่อน').split(' ')[0],order=Math.max(0,...Object.values(pages).map(p=>p.order||0))+1;
+  pages[id]=friendPage(id,name,order);pages[id].uid=user.uid;queueSave(id);goto(id);status('สร้างหน้าของคุณแล้ว เขียนได้เลย');
+};
 $('#share').onclick=async()=>{const u=location.origin+location.pathname+'?book='+bookId;
   try{await navigator.clipboard.writeText(u);status('คัดลอกลิงก์แล้ว ส่งให้เพื่อนได้เลย')}catch(e){status(u)}};
 
 document.addEventListener('keydown',e=>{
   if(editingId){if(e.key==='Escape')finishEdit();return}
   if(e.target.closest('input,select,textarea'))return;
-  if(viewMode){if(e.key==='ArrowLeft')step(-1);if(e.key==='ArrowRight'||e.key===' ')step(1);if(e.key==='Escape'&&!document.body.classList.contains('locked'))setView(false);return}
+  if(locked()){if(e.key==='ArrowLeft')step(-1);if(e.key==='ArrowRight'||(viewMode&&e.key===' '))step(1);if(viewMode&&e.key==='Escape'&&!document.body.classList.contains('locked'))setView(false);return}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();undo();return}
   const it=sel&&find(sel);
   if(it&&(e.key==='Delete'||e.key==='Backspace')){e.preventDefault();delSel();return}
@@ -571,6 +634,8 @@ const md=$('#mode');
 if(store.mode==='firebase'){md.classList.add('on');md.innerHTML='<i></i>ออนไลน์ บันทึกขึ้น Firebase<br>สมุด: <b></b>'}
 else md.innerHTML='<i></i>บันทึกในเครื่องนี้เท่านั้น<br>ใส่ค่า Firebase ในไฟล์เพื่อเก็บออนไลน์<br>สมุด: <b></b>';
 md.querySelector('b').textContent=bookId;
+store.onAuth(u=>{user=u;sel=null;permChanged()});
+store.listenBook((b,fc)=>{book=b;bookFromCache=fc;permChanged()});
 store.listen(onRemote);
 updCtx();
 </script>

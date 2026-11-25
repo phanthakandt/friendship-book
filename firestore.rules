@@ -1,0 +1,37 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /books/{bookId} {
+      function signedIn() { return request.auth != null; }
+      function isOwner() {
+        return signedIn() &&
+          get(/databases/$(database)/documents/books/$(bookId)).data.owner == request.auth.uid;
+      }
+
+      // ข้อมูลสมุด: ใครก็อ่านได้ คนแรกที่ล็อกอินตั้งตัวเองเป็นเจ้าของได้ แล้วเปลี่ยนเจ้าของไม่ได้
+      allow read: if true;
+      allow create: if signedIn() && request.resource.data.owner == request.auth.uid;
+      allow update: if isOwner() && request.resource.data.owner == resource.data.owner;
+      allow delete: if false;
+
+      // หน้าในสมุด: เจ้าของแก้ได้ทุกหน้า เพื่อนสร้างได้ 1 หน้า (id = u_<uid>) และแก้/ลบได้เฉพาะหน้าตัวเอง
+      match /pages/{pageId} {
+        allow read: if true;
+        allow create: if isOwner() ||
+          (signedIn() && pageId == 'u_' + request.auth.uid && request.resource.data.uid == request.auth.uid);
+        allow update: if isOwner() ||
+          (signedIn() && resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid);
+        allow delete: if isOwner() || (signedIn() && resource.data.uid == request.auth.uid);
+      }
+
+      // รูปและลายมือ: ใครก็ดูได้ คนที่ล็อกอินอัปโหลดของตัวเองได้ ลบได้เฉพาะของตัวเอง (เจ้าของสมุดลบได้ทั้งหมด)
+      match /assets/{assetId} {
+        allow read: if true;
+        allow create: if signedIn() && request.resource.data.uid == request.auth.uid
+                      && request.resource.data.data.size() < 1000000;
+        allow update: if false;
+        allow delete: if isOwner() || (signedIn() && resource.data.uid == request.auth.uid);
+      }
+    }
+  }
+}
